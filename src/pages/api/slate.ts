@@ -4,6 +4,38 @@ import type { Game, SlateResponse } from '@/lib/types'
 const CFBD_API_KEY = process.env.CFBD_API_KEY
 const ODDS_API_KEY = process.env.ODDS_API_KEY
 
+// Build a map of team -> AP rank (latest available)
+function buildRankMap(ranksRaw:any[]): Map<string, number> {
+  const m = new Map<string, number>()
+  if (!Array.isArray(ranksRaw)) return m
+  // Flatten all polls, grab AP entries, prefer the most recent week
+  for (const wk of ranksRaw) {
+    const polls = (wk && wk.polls) || []
+    for (const p of polls) {
+      const isAP = /AP/i.test(p.poll || '')
+      if (!isAP) continue
+      for (const r of (p.ranks || [])) {
+        const name = (r.team || r.school || r.name || '').toString().toLowerCase()
+        const rank = Number(r.rank || r.current || r.value)
+        if (!name || !rank) continue
+        // newer weeks overwrite older
+        m.set(name, rank)
+      }
+    }
+  }
+  return m
+}
+
+// Derive a pseudo-spread/total if odds are missing, using team talent
+function deriveLines(homeTalent:number, awayTalent:number) {
+  const diff = Math.max(-40, Math.min(40, homeTalent - awayTalent))
+  // Convert talent diff to roughly a point spread (very rough heuristic)
+  const spread = Math.round((diff) / 6)  // ±6-7 points for big mismatches
+  // Higher combined talent -> higher total; keep in realistic range
+  const avg = (homeTalent + awayTalent) / 2
+  const total = Math.max(40, Math.min(74, Math.round(46 + (avg * 0.35))))
+  return { spread, total }
+}
 // FBS conference names (lowercased) for filtering
 const FBS_CONFS = new Set([
   'sec','big ten','big 12','acc','pac-12','pac-10','pac','american athletic','aac','mountain west','sun belt','conference usa','c-usa','mid-american','mac','independent','fbs independents','notre dame'
@@ -11,6 +43,8 @@ const FBS_CONFS = new Set([
 
 // Return true if a game is FBS vs FBS (or at least one FBS vs strong opponent)
 function isFBSGame(g:any){
+  const div = (g.division || g.division_name || '').toString().toLowerCase()
+  if (div.includes('fbs')) return true
   const hc = (g.home_conference || g.homeConference || g.home_conf || '').toString().toLowerCase()
   const ac = (g.away_conference || g.awayConference || g.away_conf || '').toString().toLowerCase()
   const ht = (g.home_team || g.homeTeam || g.home || '').toString().toLowerCase()
@@ -18,6 +52,7 @@ function isFBSGame(g:any){
   const fbsConf = (s:string)=> Array.from(FBS_CONFS).some(k=> s.includes(k))
   return fbsConf(hc) || fbsConf(ac) || ht.includes('notre dame') || at.includes('notre dame')
 }
+
 
 // ET window using Intl timezone (no hard-coded offsets)
 function formatETDate(d: Date) {
@@ -47,7 +82,7 @@ async function getCFBDGames(): Promise<any[]> {
   if (!CFBD_API_KEY) return []
   const year = new Date().getFullYear()
   // Pull a broad list && filter client-side to the next ~10 days
-  const url = `https://api.collegefootballdata.com/games?year=${year}&seasonType=regular`
+  const url = `https://api.collegefootballdata.com/games?year=${year}&seasonType=regular&division=fbs`
   return fetchJSON(url, { headers: { Authorization: `Bearer ${CFBD_API_KEY}` } })
 }
 
@@ -123,16 +158,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
     ])
 
     // Build map of AP ranks (latest poll object)
-    let rankMap = new Map<string, number>()
-    if (Array.isArray(ranksRaw) && ranksRaw.length) {
-      const latest = ranksRaw[ranksRaw.length - 1]
-      if (latest && latest.polls) {
-        const ap = latest.polls.find((p:any)=>/AP/i.test(p.poll))
-        if (ap && ap.ranks) {
-          ap.ranks.forEach((r:any)=> rankMap.set((r.team || r.school || '').toLowerCase(), r.rank))
-        }
-      }
-    }
+    let rankMap = buildRankMap(ranksRaw as any[])
 
     // Build team talent map (normalize to 0-100)
     const talents = new Map<string, number>()
@@ -167,7 +193,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
         const homeTalent = talents.get(home.toLowerCase()) ?? 70
         const awayTalent = talents.get(away.toLowerCase()) ?? 70
         const pd = Math.min(100, Math.round((homeTalent+awayTalent)/2))
-        const pre = computeScores({ spread: g.spread, total: g.total, importance: (rkH && rkA) ? 95 : 70, prospectDensity: pd })
+        const derived = deriveLines(homeTalent, awayTalent);
+        const pre = computeScores({ spread: typeof g.spread==='number'? g.spread : derived.spread, total: typeof g.total==='number'? g.total : derived.total, importance: (rkH && rkA) ? 95 : (rkH || rkA) ? 80 : 65, prospectDensity: pd })
         const kickoff = new Date(kickIso).toISOString()
         const w = windowFromET(new Date(kickoff))
         return {
