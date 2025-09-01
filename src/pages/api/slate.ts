@@ -4,6 +4,44 @@ import type { Game, SlateResponse } from '@/lib/types'
 const CFBD_API_KEY = process.env.CFBD_API_KEY
 const ODDS_API_KEY = process.env.ODDS_API_KEY
 
+// Conference baseline talent (fallback when team talent is missing)
+const CONF_BASE: Record<string, number> = {
+  'sec': 90, 'big ten': 88, 'big 12': 84, 'acc': 82, 'pac-12': 82, 'pac-10': 82, 'pac': 82,
+  'american athletic': 76, 'aac': 76, 'mountain west': 72, 'sun belt': 70, 'conference usa': 68, 'c-usa': 68,
+  'mid-american': 66, 'mac': 66, 'independent': 78, 'fbs independents': 78
+}
+
+function estimateTalent(name:string, conf:string, talents: Map<string, number>) {
+  const t = talents.get(name.toLowerCase())
+  if (typeof t === 'number') return t
+  const base = CONF_BASE[conf?.toLowerCase?.() || '']
+  return typeof base === 'number' ? base : 68
+}
+
+function importanceFrom(rkHome?:number, rkAway?:number, avgTalent=70, sameConf=false, prime=false){
+  const rA = rkHome ?? 40
+  const rB = rkAway ?? 40
+  // Lower sum = better. Convert to a 50–98 scale.
+  let imp = 100 - (rA + rB)*1.5
+  if (rkHome && rkAway) imp += 6
+  if (sameConf) imp += 3
+  if (prime) imp += 2
+  // Reward higher combined talent a bit
+  imp += (avgTalent - 70) * 0.3
+  return Math.max(50, Math.min(98, Math.round(imp)))
+}
+
+function deriveLines2(homeTalent:number, awayTalent:number, rkHome?:number, rkAway?:number){
+  // Use a smooth function; don't round to integer to avoid clustering
+  const td = (homeTalent - awayTalent) // -40..40 roughly
+  const rd = ((rkAway ?? 40) - (rkHome ?? 40)) // positive favors home
+  // Spread: talent weighted + small rank component
+  const spread = Math.max(-21, Math.min(21, td*0.18 + rd*0.15))
+  // Total: scale by average talent; keep realistic
+  const avg = (homeTalent + awayTalent)/2
+  const total = Math.max(42, Math.min(76, 46 + avg*0.32))
+  return { spread, total }
+}
 // Build a map of team -> AP rank (latest available)
 function buildRankMap(ranksRaw:any[]): Map<string, number> {
   const m = new Map<string, number>()
@@ -194,7 +232,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
         const awayTalent = talents.get(away.toLowerCase()) ?? 70
         const pd = Math.min(100, Math.round((homeTalent+awayTalent)/2))
         const derived = deriveLines(homeTalent, awayTalent);
-        const pre = computeScores({ spread: typeof g.spread==='number'? g.spread : derived.spread, total: typeof g.total==='number'? g.total : derived.total, importance: (rkH && rkA) ? 95 : (rkH || rkA) ? 80 : 65, prospectDensity: pd })
+        const sameConf = (homeConf && awayConf) ? homeConf === awayConf : false;
+        const prime = /prime/i.test(windowFromET(new Date(kickoff)))
+        const importance = importanceFrom(rkH, rkA, (homeTalent+awayTalent)/2, sameConf, prime)
+        const derived2 = deriveLines2(homeTalent, awayTalent, rkH, rkA)
+        const useSpread = (typeof g.spread === 'number') ? g.spread : derived2.spread
+        const useTotal  = (typeof g.total === 'number')  ? g.total  : derived2.total
+        const pre = computeScores({ spread: useSpread, total: useTotal, importance, prospectDensity: pd })
         const kickoff = new Date(kickIso).toISOString()
         const w = windowFromET(new Date(kickoff))
         return {
