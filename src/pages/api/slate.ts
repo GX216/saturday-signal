@@ -4,6 +4,38 @@ import type { Game, SlateResponse } from '@/lib/types'
 const CFBD_API_KEY = process.env.CFBD_API_KEY
 const ODDS_API_KEY = process.env.ODDS_API_KEY
 
+// FBS conference names (lowercased) for filtering
+const FBS_CONFS = new Set([
+  'sec','big ten','big 12','acc','pac-12','pac-10','pac','american athletic','aac','mountain west','sun belt','conference usa','c-usa','mid-american','mac','independent','fbs independents','notre dame'
+]);
+
+// Return true if a game is FBS vs FBS (or at least one FBS vs strong opponent)
+function isFBSGame(g:any){
+  const hc = (g.home_conference || g.homeConference || g.home_conf || '').toString().toLowerCase()
+  const ac = (g.away_conference || g.awayConference || g.away_conf || '').toString().toLowerCase()
+  const ht = (g.home_team || g.homeTeam || g.home || '').toString().toLowerCase()
+  const at = (g.away_team || g.awayTeam || g.away || '').toString().toLowerCase()
+  const fbsConf = (s:string)=> Array.from(FBS_CONFS).some(k=> s.includes(k))
+  return fbsConf(hc) || fbsConf(ac) || ht.includes('notre dame') || at.includes('notre dame')
+}
+
+// ET window using Intl timezone (no hard-coded offsets)
+function formatETDate(d: Date) {
+  return new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric' }).format(d)
+}
+function formatETTime(d: Date) {
+  return new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' }).format(d)
+}
+
+function windowFromET(d: Date): 'Noon'|'Afternoon'|'Prime'|'Late' {
+  const hour24 = parseInt(new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: '2-digit', hour12: false }).format(d), 10)
+  if (hour24 < 15) return 'Noon'
+  if (hour24 < 19) return 'Afternoon'
+  if (hour24 < 22) return 'Prime'
+  return 'Late'
+}
+
+
 async function fetchJSON(url: string, init: RequestInit = {}) {
   const res = await fetch(url, init)
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
@@ -32,9 +64,10 @@ async function getTeamTalent(): Promise<any[]> {
   return fetchJSON(url, { headers: { Authorization: `Bearer ${CFBD_API_KEY}` } })
 }
 
+/* replaced by windowFromET */
 function toWindow(kickoffIso: string): 'Noon'|'Afternoon'|'Prime'|'Late' {
   const d = new Date(kickoffIso)
-  const hours = d.getUTCHours() - 4 // crude ET offset; V1: use proper tz
+  const hours = d.getUTCHours() - 4
   const h = (hours + 24) % 24
   if (h < 15) return 'Noon'
   if (h < 19) return 'Afternoon'
@@ -116,9 +149,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
 
     // Filter next 10 days
     const cutoff = new Date(now.getTime() + 10*24*3600*1000)
-    const upcoming = (gamesRaw || []).filter((g:any)=> {
+    const upcoming = (gamesRaw || []).filter((g:any)=>{
       const d = new Date(g.start_date || g.startDate || g.start_time || g.startTime || g.start || g.start_time_tbd)
-      return d.toString() !== 'Invalid Date' && d < cutoff && d > now
+      return d.toString() !== 'Invalid Date' && d < cutoff && d > now && isFBSGame(g)
     })
 
     // Map to our Game objects
@@ -136,11 +169,11 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
         const pd = Math.min(100, Math.round((homeTalent+awayTalent)/2))
         const pre = computeScores({ spread: g.spread, total: g.total, importance: (rkH && rkA) ? 95 : 70, prospectDensity: pd })
         const kickoff = new Date(kickIso).toISOString()
-        const w = toWindow(kickoff)
+        const w = windowFromET(new Date(kickoff))
         return {
           id: g.id || `${idx}-${home}-${away}`,
           window: w,
-          kickoffET: new Date(kickoff).toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour:'numeric', minute:'2-digit' }),
+          kickoffET: formatETTime(new Date(kickoff)),
           network,
           teamA: home, teamB: away,
           rankA: rkH, rankB: rkA,
@@ -155,6 +188,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
           drama: pre.drama,
           dramaSrc: 'Computed',
           lastUpdated: now.toISOString(),
+          kickoffDate: formatETDate(new Date(kickoff)),
+          kickoffISO: kickoff,
           why: (rkH && rkA) ? 'Ranked vs ranked; playoff seeding significance.' : 'Quality matchup with solid talent composite.'
         } as Game
       })

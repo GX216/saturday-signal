@@ -21,7 +21,7 @@ export default function GameCard({ g, score }: { g: Game; score: number }) {
             {g.teamA}{g.rankA ? ` (#${g.rankA})` : ''} vs {g.teamB}{g.rankB ? ` (#${g.rankB})` : ''}
           </div>
           <div className='text-sm text-slate-300 mt-0.5'>
-            {g.window} • {g.kickoffET} ET{g.network ? ` • ${g.network}` : ''} • Updated {g.lastUpdated ? new Date(g.lastUpdated).toLocaleTimeString() : 'n/a'}
+            {g.window} • {g.kickoffDate || ''} • {g.kickoffET} ET{g.network ? ` • ${g.network}` : ''} • Updated {g.lastUpdated ? new Date(g.lastUpdated).toLocaleTimeString() : 'n/a'}
           </div>
         </div>
         <span className='badge'>WatchScore {score}</span>

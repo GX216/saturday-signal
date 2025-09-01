@@ -5,6 +5,8 @@ export interface Game {
   id: string;
   window: WindowKey;
   kickoffET: string;
+  kickoffDate?: string; // e.g., Wed, Sep 4 (ET)
+  kickoffISO?: string;
   network?: string;
   confA?: string; confB?: string;
   rankA?: number; rankB?: number;
