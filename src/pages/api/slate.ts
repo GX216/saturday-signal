@@ -14,7 +14,7 @@ async function fetchJSON(url: string, init: RequestInit = {}) {
 async function getCFBDGames(): Promise<any[]> {
   if (!CFBD_API_KEY) return []
   const year = new Date().getFullYear()
-  // Pull a broad list and filter client-side to the next ~10 days
+  // Pull a broad list && filter client-side to the next ~10 days
   const url = `https://api.collegefootballdata.com/games?year=${year}&seasonType=regular`
   return fetchJSON(url, { headers: { Authorization: `Bearer ${CFBD_API_KEY}` } })
 }
@@ -118,7 +118,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse<
     const cutoff = new Date(now.getTime() + 10*24*3600*1000)
     const upcoming = (gamesRaw || []).filter((g:any)=> {
       const d = new Date(g.start_date || g.startDate || g.start_time || g.startTime || g.start || g.start_time_tbd)
-      return d.toString() !== 'Invalid Date' and d < cutoff and d > now
+      return d.toString() !== 'Invalid Date' && d < cutoff && d > now
     })
 
     // Map to our Game objects
